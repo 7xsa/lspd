@@ -9,7 +9,8 @@ const CONFIG = window.LSPD_CONFIG;
 const PORTAL_URL = new URL("ftlspd-portal.html", location.href).href; // allow-listed auth redirect
 const PENDING_NAME_KEY = "lspd-pending-display-name-v1";
 const ME_KEY = "lspd-me-v2";
-const DEGREE_COLORS = { 1: "#60a5fa", 2: "#5eead4", 3: "#a78bfa", 4: "#38bdf8", 5: "#fb923c", 6: "#f472b6", 7: "#c084fc", 0: "#ff5a62" };
+// Degrees 1–7 share one neutral colour; degree 0 (critical) is the only one in red.
+const DEGREE_COLORS = { 1: "#f1f2f4", 2: "#f1f2f4", 3: "#f1f2f4", 4: "#f1f2f4", 5: "#f1f2f4", 6: "#f1f2f4", 7: "#f1f2f4", 0: "#e5383b" };
 const DEGREE_ORDER = [1, 2, 3, 4, 5, 6, 7, 0];
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -34,6 +35,10 @@ const state = {
   regFilter: "all",
   sopChapter: "institution",
   sopResults: false,
+  newsFilter: "all",
+  logFilter: "all",
+  logs: [],
+  logsMore: false,
   reviewKind: "recruitment",
   archiveKey: "accepted-recruitment",
   archiveRows: [],
@@ -71,6 +76,7 @@ const res = {
   // The roster loads without insignia first: older rows embed multi-megabyte images.
   roster: resource("roster", () => publicRead(T.schedule, { select: "id,badge_number,name,rank,department,admin_rank,status,punishment,last_promotion,discord_user,points,privilege_points,wings" }), { persist: true }),
   insignia: resource("insignia", async () => Object.fromEntries((await publicRead(T.schedule, { select: "id,insignia_url" }, 45000)).map((row) => [row.id, row.insignia_url || ""])), { persist: true, ttl: 600000 }),
+  news: resource("news", () => publicRead(T.news, { select: "id,title,body,category,image_url,pinned,created_at,updated_at", order: "pinned.desc,created_at.desc", limit: "60" }), { persist: true, ttl: 120000 }),
   regs: resource("regs", () => publicRead(T.regulations, { select: "id,degree,regulation_code,title,description", order: "created_at.asc" }), { persist: true }),
   reactions: resource("reactions", loadReactions, { ttl: 30000 }),
   myApps: resource("myApps", loadMyApps, { ttl: 30000 }),
@@ -217,6 +223,7 @@ function applyLanguage() {
 // ---------------------------------------------------------------- router
 const routes = {
   hub: { live: true, enter: enterHub },
+  news: { live: true, enter: enterNews },
   regulations: { enter: enterRegulations },
   sop: { enter: enterSop },
   fto: {},
@@ -227,7 +234,8 @@ const routes = {
   roster: { live: true, enter: enterRoster },
   admin: { need: "admin", enter: enterAdmin },
   review: { need: "review", live: true, enter: enterReview },
-  archives: { need: "review", enter: enterArchives }
+  archives: { need: "review", enter: enterArchives },
+  logs: { need: "admin", enter: () => loadLogs(true) }
 };
 
 function navigate() {
@@ -277,6 +285,7 @@ function renderIdentity() {
   $("#mediaComposer").hidden = !can.mediaAdd();
   $("#streamComposer").hidden = !can.admin();
   $("#rosterComposer").hidden = !can.roster();
+  $("#newsComposer").hidden = !can.admin();
 }
 
 function setMe(me) {
@@ -426,6 +435,8 @@ function enterHub() {
   hydrate(res.roster, () => countTo($("#statOfficers"), (res.roster.peek() || []).length));
   hydrate(res.streams, () => refreshLive());
   renderHubApplications();
+  if (!newsMissing) res.news.load().then(renderHubNews, noteNewsMissing);
+  renderHubNews();
 }
 
 const kindLabel = (kind) => t(kind === "transfer" ? "transfer" : "recruitment");
@@ -479,12 +490,277 @@ function renderTracker(app) {
     <ol class="steps">${steps.map(([key, mode, detail, name]) => `<li class="${mode}"><i>${icon(name)}</i><b>${esc(t(key))}</b>${detail ? `<small>${esc(detail)}</small>` : ""}</li>`).join("")}</ol>`;
 }
 
+// ---------------------------------------------------------------- news
+// Set once the news table turns out not to exist (news.sql not run yet), so the site stops asking for it.
+let newsMissing = false;
+const noteNewsMissing = (error) => { if (/PGRST205|42P01|404/.test(String(error?.code))) newsMissing = true; };
+const NEWS_CATS = ["announcement", "update", "event", "promotion", "alert"];
+const newsCat = (value) => t("newsCats")[value] || value;
+const excerpt = (text, length) => { const flat = String(text || "").replace(/\s+/g, " ").trim(); return flat.length > length ? flat.slice(0, length).replace(/\s\S*$/, "") + "…" : flat; };
+const newsCover = (row, className) => (webUrl(row.image_url) ? `<img class="${className}" src="${esc(webUrl(row.image_url))}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : `<span class="${className} news-placeholder"><img src="assets/shield.webp" alt=""></span>`);
+
+const fillNewsCategories = () => { const select = $("#newsCategory"); const value = select.value; select.innerHTML = NEWS_CATS.map((key) => `<option value="${key}">${esc(newsCat(key))}</option>`).join(""); if (value) select.value = value; };
+
+function enterNews() {
+  fillNewsCategories();
+  const list = $("#newsList");
+  if (res.news.peek()) renderNews();
+  else list.innerHTML = `<div class="news-grid">${skeletons(3, "wide")}</div>`;
+  const openLinked = () => { const id = location.hash.split("/")[2]; if (id) openNews(id); };
+  if (res.news.fresh()) return openLinked();
+  res.news.load().then(() => { renderNews(); openLinked(); }, (error) => {
+    // Before news.sql has run the table does not exist; admins get the setup hint, everyone else an empty state.
+    noteNewsMissing(error);
+    if (!res.news.peek()) list.innerHTML = empty(newsMissing && can.admin() ? "newsSetup" : "newsEmpty");
+  });
+}
+
+function renderNews() {
+  const rows = res.news.peek();
+  if (!rows) return;
+  loadNotes().newsSeenAt = now();
+  saveNotes();
+  updateNewsDot();
+  const query = $("#newsSearch").value.trim().toLowerCase();
+  const used = NEWS_CATS.filter((key) => rows.some((row) => row.category === key));
+  if (state.newsFilter !== "all" && !used.includes(state.newsFilter)) state.newsFilter = "all";
+  $("#newsFilters").innerHTML = (used.length > 1 ? ["all", ...used] : []).map((key) => `<button class="chip-btn" type="button" data-act="news-filter" data-id="${key}" aria-selected="${state.newsFilter === key}">${esc(key === "all" ? t("newsAll") : newsCat(key))}</button>`).join("");
+  const shown = rows.filter((row) => (state.newsFilter === "all" || row.category === state.newsFilter) && (!query || `${row.title} ${row.body}`.toLowerCase().includes(query)));
+  const list = $("#newsList");
+  if (!shown.length) { list.innerHTML = empty("newsEmpty"); return; }
+  const [lead, ...rest] = shown;
+  list.innerHTML = newsCard(lead, true) + (rest.length ? `<div class="news-grid">${rest.map((row) => newsCard(row)).join("")}</div>` : "");
+}
+
+function newsCard(row, featured = false) {
+  const id = esc(row.id);
+  return `<article class="news-card${featured ? " featured" : ""} cat-${esc(row.category)}">
+    <button class="news-media" type="button" data-act="news-open" data-id="${id}" aria-label="${esc(row.title)}">${newsCover(row, "news-cover")}</button>
+    <div class="news-body">
+      <p class="news-meta"><span class="news-tag">${esc(newsCat(row.category))}</span>${row.pinned ? `<span class="news-pin">${icon("bolt")}${esc(t("newsPinnedTag"))}</span>` : ""}<time datetime="${esc(row.created_at)}">${esc(fmtDate(row.created_at))}</time></p>
+      <h3 dir="auto"><button type="button" data-act="news-open" data-id="${id}">${esc(row.title)}</button></h3>
+      ${row.body ? `<p class="news-excerpt" dir="auto">${esc(excerpt(row.body, featured ? 340 : 150))}</p>` : ""}
+      <div class="news-foot"><button class="link-btn" type="button" data-act="news-open" data-id="${id}">${esc(t("newsRead"))} <svg class="i flip"><use href="assets/icons.svg#i-arrow-right"/></svg></button>${can.admin() ? tools("news", row.id) : ""}</div>
+    </div>
+  </article>`;
+}
+
+function renderHubNews() {
+  const rows = (res.news.peek() || []).slice(0, 3);
+  $("#hubNews").hidden = !rows.length;
+  $("#hubNewsList").innerHTML = rows.map((row) => `<button class="news-mini" type="button" data-act="news-open" data-id="${esc(row.id)}">${newsCover(row, "news-mini-cover")}<span><small><b>${esc(newsCat(row.category))}</b> · ${esc(fmtDate(row.created_at))}</small><strong dir="auto">${esc(row.title)}</strong></span></button>`).join("");
+  updateNewsDot();
+}
+
+function openNews(id) {
+  const row = (res.news.peek() || []).find((entry) => entry.id === id);
+  if (!row) return;
+  const words = String(row.body || "").split(/\s+/).filter(Boolean).length;
+  $("#newsCover").innerHTML = webUrl(row.image_url) ? newsCover(row, "") : "";
+  $("#newsCover").hidden = !webUrl(row.image_url);
+  $("#newsMeta").textContent = [newsCat(row.category), fmtDateTime(row.created_at), t("sopMinutes", { n: Math.max(1, Math.round(words / 200)) })].join(" · ");
+  $("#newsHeading").textContent = row.title;
+  $("#newsBody").innerHTML = String(row.body || "").split(/\n{2,}/).map((part) => `<p>${esc(part.trim()).replace(/\n/g, "<br>")}</p>`).join("");
+  $("#newsFoot").innerHTML = `<button class="btn" type="button" data-act="news-link" data-id="${esc(row.id)}">${icon("link")}<span>${esc(t("newsCopyLink"))}</span></button>` + (can.admin() ? `<button class="btn" type="button" data-act="edit-news" data-id="${esc(row.id)}">${icon("edit")}<span>${esc(t("edit"))}</span></button><button class="btn btn-danger" type="button" data-act="del-news" data-id="${esc(row.id)}">${icon("trash")}<span>${esc(t("remove"))}</span></button>` : "");
+  // Opening an article gives it a shareable address; closing it goes back to the list address.
+  if (state.route === "news") history.replaceState(null, "", "#/news/" + row.id);
+  const dialog = $("#dlgNews");
+  dialog.addEventListener("close", () => { if (location.hash.startsWith("#/news/")) history.replaceState(null, "", state.route === "news" ? "#/news" : location.hash); }, { once: true });
+  if (!dialog.open) openDialog("dlgNews");
+}
+
+function editNews(id) {
+  const row = (res.news.peek() || []).find((entry) => entry.id === id);
+  if (!row) return;
+  closeDialog("dlgNews");
+  if (state.route !== "news") location.hash = "#/news";
+  const form = $("#newsForm");
+  form.reset();
+  fillNewsCategories();
+  state.editing.news = row.id;
+  form.elements.title.value = row.title;
+  form.elements.category.value = row.category;
+  form.elements.image_url.value = row.image_url || "";
+  form.elements.body.value = row.body || "";
+  form.elements.pinned.checked = Boolean(row.pinned);
+  form.querySelector('[type="submit"] span').textContent = t("newsUpdate");
+  setTimeout(() => revealForm(form), 120);
+}
+
+async function saveNews(form, button) {
+  const data = Object.fromEntries(new FormData(form));
+  const id = state.editing.news;
+  const existing = id ? (res.news.peek() || []).find((row) => row.id === id) : null;
+  const title = String(data.title || "").trim();
+  if (!title) return toast(t("fillRequired"), "error");
+  await busy(button, async () => {
+    const picked = await pickImage(form, 1600);
+    const patch = {
+      title, body: String(data.body || "").trim(), category: NEWS_CATS.includes(data.category) ? data.category : "announcement",
+      image_url: picked?.url || webUrl(data.image_url) || null, pinned: form.elements.pinned.checked, updated_at: now()
+    };
+    if (existing) await db.update(T.news, id, patch);
+    else await db.insert(T.news, { id: uid(), created_at: now(), ...patch });
+    form.reset();
+    form.closest("details").open = false;
+    toast(t(existing ? "saved" : "newsPublished"), "ok");
+    const rows = await res.news.load(true);
+    loadNotes().news = rows.slice(0, 30).map((row) => row.id); // your own post is not news to you
+    saveNotes();
+    renderNews();
+  });
+}
+
+function syncNewsNotes(rows) {
+  if (!rows) return;
+  loadNotes();
+  const known = new Set(notes.news || []);
+  if (notes.news) for (const row of rows.slice(0, 10).reverse()) if (!known.has(row.id)) pushNote("news", { title: row.title, cat: row.category }, { href: "#/news/" + row.id, at: row.created_at });
+  notes.news = rows.slice(0, 30).map((row) => row.id);
+  saveNotes();
+  updateNewsDot();
+  if (state.route === "hub") renderHubNews();
+}
+
+// A dot on the News tab while there is a post newer than the visitor's last look.
+function updateNewsDot() {
+  const latest = (res.news.peek() || []).reduce((max, row) => (row.created_at > max ? row.created_at : max), "");
+  $("#newsDot").hidden = !latest || latest <= (loadNotes().newsSeenAt || "") || Date.now() - new Date(latest) > 14 * 86400000;
+}
+
+// ---------------------------------------------------------------- logs
+const LOG_PAGE = 80;
+const LOG_ICONS = { insert: ["plus", "ok"], update: ["edit", ""], delete: ["trash", "bad"], submit: ["send", ""], accepted: ["check", "ok"], rejected: ["x", "bad"], role: ["user-shield", "warn"], login: ["login", ""], logout: ["logout", ""] };
+const logParts = (action) => { const [noun = "", verb = ""] = String(action || "").split("."); return { noun, verb }; };
+const roleName = (value) => { const key = "role" + String(value).charAt(0).toUpperCase() + String(value).slice(1); const label = t(key); return label === key ? value : label; };
+
+function logTitle(row) {
+  const { noun, verb } = logParts(row.action);
+  const name = t("logNouns")[noun] || noun;
+  const done = t("logVerbs")[verb] || verb;
+  if (noun === "auth") return done.charAt(0).toUpperCase() + done.slice(1);
+  return getLang() === "ar" ? `${done} ${name}` : `${name} ${done}`;
+}
+
+const logDay = (value) => {
+  const date = new Date(value);
+  const days = Math.round((new Date(new Date().toDateString()) - new Date(date.toDateString())) / 86400000);
+  return days === 0 ? t("logToday") : days === 1 ? t("logYesterday") : date.toLocaleDateString(locale(), { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+};
+
+async function loadLogs(reset) {
+  if (!can.admin()) return;
+  const list = $("#logList");
+  if (reset) {
+    state.logs = [];
+    list.innerHTML = skeletons(6);
+    const filters = t("logFilters");
+    $("#logFilters").innerHTML = Object.keys(filters).map((key) => `<button class="chip-btn" type="button" data-act="logs-filter" data-id="${key}" aria-selected="${state.logFilter === key}">${esc(filters[key])}</button>`).join("");
+    loadLogStats();
+  }
+  try {
+    const client = await sdk();
+    let query = client.from(T.audit).select("id,action,target,event_type,details,source,actor_email,actor_role,created_at")
+      .order("created_at", { ascending: false }).range(state.logs.length, state.logs.length + LOG_PAGE - 1);
+    if (state.logFilter !== "all") query = query.eq("event_type", state.logFilter);
+    const { data } = await run(query);
+    state.logs = state.logs.concat(data);
+    state.logsMore = data.length === LOG_PAGE;
+    renderLogs();
+  } catch (error) {
+    fail(error);
+    if (!state.logs.length) list.innerHTML = empty("logsEmpty");
+  }
+}
+
+async function loadLogStats() {
+  const labels = t("logStats");
+  const cards = [["today", "clock"], ["week", "layers"], ["decisions", "check"], ["people", "users"]];
+  $("#logStats").innerHTML = cards.map(([key, name]) => `<div class="card metric">${icon(name)}<b id="logStat-${key}">–</b><span>${esc(labels[key])}</span></div>`).join("");
+  try {
+    const client = await sdk();
+    const midnight = new Date(new Date().toDateString()).toISOString();
+    const week = new Date(Date.now() - 7 * 86400000).toISOString();
+    const count = (filter) => run(filter(client.from(T.audit).select("id", { count: "exact", head: true }))).then((result) => result.count || 0);
+    const [today, weekly, decisions, people] = await Promise.all([
+      count((query) => query.gte("created_at", midnight)),
+      count((query) => query.gte("created_at", week)),
+      count((query) => query.gte("created_at", week).in("action", ["application.accepted", "application.rejected"])),
+      run(client.from(T.audit).select("actor_email").gte("created_at", week).limit(1000)).then((result) => new Set(result.data.map((row) => row.actor_email).filter(Boolean)).size)
+    ]);
+    Object.entries({ today, week: weekly, decisions, people }).forEach(([key, value]) => countTo($("#logStat-" + key), value));
+  } catch (error) { console.warn(error); }
+}
+
+function filteredLogs() {
+  const query = $("#logsSearch").value.trim().toLowerCase();
+  return state.logs.filter((row) => !query || [row.action, logTitle(row), row.target, row.actor_email, row.actor_role, JSON.stringify(row.details || {})].join(" ").toLowerCase().includes(query));
+}
+
+function renderLogs() {
+  const rows = filteredLogs();
+  $("#logsCount").textContent = t("logsCount", { n: state.logs.length });
+  $("#logsMore").hidden = !state.logsMore;
+  if (!rows.length) { $("#logList").innerHTML = empty("logsEmpty"); return; }
+  let day = "";
+  $("#logList").innerHTML = rows.map((row) => {
+    const label = logDay(row.created_at);
+    const head = label !== day ? `<p class="log-day">${esc(label)}</p>` : "";
+    day = label;
+    return head + logItem(row);
+  }).join("");
+}
+
+function logItem(row) {
+  const { verb } = logParts(row.action);
+  const [name, tone] = LOG_ICONS[verb] || ["info", ""];
+  const fields = t("logFields");
+  const details = row.details || {};
+  const shown = (key, value) => (/_(at|until)$/.test(key) && !Number.isNaN(Date.parse(value)) ? fmtDateTime(value) : typeof value === "object" ? JSON.stringify(value) : String(value));
+  const extra = Object.entries(details).filter(([, value]) => value !== "" && value != null);
+  const change = row.action === "account.role" && details.previous_role ? `<span class="log-change">${esc(roleName(details.previous_role))} → ${esc(roleName(details.role))}</span>` : "";
+  const field = (label, value) => `<div><dt>${esc(label)}</dt><dd>${value}</dd></div>`;
+  return `<details class="log-item">
+    <summary>
+      <i class="note-icon ${tone}">${icon(name)}</i>
+      <span class="log-main"><b>${esc(logTitle(row))}</b>${row.target ? `<span class="log-target" dir="auto">${esc(row.target)}</span>` : ""}${change}</span>
+      <span class="log-who"><span>${esc(row.actor_email || t("logSystem"))}</span>${row.actor_role ? `<em class="role-chip">${esc(roleName(row.actor_role))}</em>` : ""}</span>
+      <time datetime="${esc(row.created_at)}" title="${esc(fmtDateTime(row.created_at))}">${esc(new Date(row.created_at).toLocaleTimeString(locale(), { hour: "2-digit", minute: "2-digit" }))}</time>
+      ${icon("chevron")}
+    </summary>
+    <div class="log-detail">
+      <dl class="log-fields">
+        ${field(fields.actor, esc(row.actor_email || t("logSystem")))}
+        ${field(fields.role, esc(row.actor_role ? roleName(row.actor_role) : "–"))}
+        ${field(fields.source, esc([row.source, row.event_type].filter(Boolean).join(" · ") || "–"))}
+        ${field(fields.when, esc(`${fmtDateTime(row.created_at)} · ${ago(row.created_at)}`))}
+        ${field(fields.id, `<code>${esc(row.id)}</code>`)}
+        ${row.target ? field(fields.target, `<span dir="auto">${esc(row.target)}</span>`) : ""}
+      </dl>
+      ${extra.length ? `<p class="log-sub">${esc(fields.details)} · <code>${esc(row.action)}</code></p><dl class="log-data">${extra.map(([key, value]) => `<div><dt>${esc(key)}</dt><dd dir="auto">${esc(shown(key, value))}</dd></div>`).join("")}</dl>` : ""}
+    </div>
+  </details>`;
+}
+
+function exportLogs() {
+  const rows = filteredLogs();
+  if (!rows.length) return toast(t("logsEmpty"), "warn");
+  const columns = ["created_at", "action", "target", "actor_email", "actor_role", "event_type", "source", "details"];
+  const cell = (value) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+  const csv = [columns.join(","), ...rows.map((row) => columns.map((key) => cell(key === "details" ? JSON.stringify(row.details || {}) : row[key])).join(","))].join("\r\n");
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" }));
+  link.download = `lspd-logs-${new Date().toISOString().slice(0, 10)}.csv`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 2000);
+}
+
 // ---------------------------------------------------------------- notifications
 // Built from data the visitor can already read: their applications, their account role and (for
 // reviewers) the pending queue. Each account keeps its own list and last-seen snapshot in this browser.
 const NOTES_KEY = "lspd-notes-v1:";
 const NOTE_LIMIT = 40;
-const NOTE_STYLE = { welcome: ["shield", ""], sop: ["sop", ""], submitted: ["send", ""], accepted: ["check", "ok"], rejected: ["x", "bad"], role: ["user-shield", "warn"], pending: ["inbox", "warn"] };
+const NOTE_STYLE = { news: ["bell", ""], welcome: ["shield", ""], sop: ["sop", ""], submitted: ["send", ""], accepted: ["check", "ok"], rejected: ["x", "bad"], role: ["user-shield", "warn"], pending: ["inbox", "warn"] };
 let notes = null;
 
 function loadNotes() {
@@ -509,8 +785,8 @@ function pushNote(kind, vars = {}, { at = now(), href = "", quiet = false } = {}
 }
 
 function noteText(note) {
-  const vars = { ...note.vars, type: note.vars.kind ? kindLabel(note.vars.kind) : "", role: note.vars.role ? roleLabel(note.vars.role) : "", from: note.vars.from ? roleLabel(note.vars.from) : "" };
-  const keys = { welcome: "noteWelcome", sop: "noteSop", submitted: "noteSubmitted", accepted: "noteAccepted", rejected: "noteRejected", role: "noteRole", pending: "notePending" };
+  const vars = { ...note.vars, cat: note.vars.cat ? t("newsCats")[note.vars.cat] || note.vars.cat : "", type: note.vars.kind ? kindLabel(note.vars.kind) : "", role: note.vars.role ? roleLabel(note.vars.role) : "", from: note.vars.from ? roleLabel(note.vars.from) : "" };
+  const keys = { news: "noteNews", welcome: "noteWelcome", sop: "noteSop", submitted: "noteSubmitted", accepted: "noteAccepted", rejected: "noteRejected", role: "noteRole", pending: "notePending" };
   const key = keys[note.kind] || "noteWelcome";
   return { title: t(key, vars), text: note.vars.detail || t(key + "Text", vars) };
 }
@@ -573,6 +849,7 @@ function syncPendingNote(count) {
 // Re-reads the role and the visitor's applications; runs on sign-in, every minute and when the tab comes back.
 async function checkNotes() {
   if (!state.authReady) return;
+  if (!newsMissing) res.news.load(true).then(syncNewsNotes, noteNewsMissing);
   if (!state.me) return syncNotes([]);
   try {
     const client = await sdk();
@@ -1458,19 +1735,11 @@ async function enterAdmin() {
   res.roster.load().then((rows) => countTo($("#mOfficers"), rows.length), console.warn);
   res.assets.load().then(() => countTo($("#mMedia"), assetsOf("media").length), console.warn);
   refreshReviewBadge();
-  const log = $("#activityList");
   try {
     const client = await sdk();
-    const [archived, activity] = await Promise.all([
-      run(client.from(T.applications).select("id", { count: "exact", head: true }).in("status", ["accepted", "rejected"])),
-      run(client.from(T.audit).select("action,target,actor_email,created_at").order("created_at", { ascending: false }).limit(15))
-    ]);
+    const archived = await run(client.from(T.applications).select("id", { count: "exact", head: true }).in("status", ["accepted", "rejected"]));
     countTo($("#mArchived"), archived.count || 0);
-    log.innerHTML = activity.data.length ? activity.data.map((row) => `<div class="log-row"><code>${esc(row.action)}</code><span>${esc(row.actor_email || "system")}${row.target ? " → " + esc(String(row.target).slice(0, 60)) : ""}</span><time>${esc(fmtDateTime(row.created_at))}</time></div>`).join("") : empty("activityEmpty");
-  } catch (error) {
-    console.warn(error);
-    log.innerHTML = empty("activityEmpty");
-  }
+  } catch (error) { console.warn(error); }
 }
 
 async function openAccounts() {
@@ -1572,7 +1841,8 @@ const removers = {
   reg: [T.regulations, "regDeleteAsk", () => res.regs.load(true).then(renderRegs)],
   asset: [T.assets, "deleteAsk", () => res.assets.load(true).then(() => { renderCrew(); renderMedia(); })],
   stream: [T.streams, "deleteAsk", () => res.streams.load(true).then(renderStreams)],
-  roster: [T.schedule, "deleteAsk", () => res.roster.load(true).then(renderRoster)]
+  roster: [T.schedule, "deleteAsk", () => res.roster.load(true).then(renderRoster)],
+  news: [T.news, "newsDeleteAsk", () => res.news.load(true).then(() => { closeDialog("dlgNews"); renderNews(); })]
 };
 
 async function removeRecord(kind, id) {
@@ -1659,6 +1929,15 @@ const actions = {
   "del-asset": (el) => removeRecord("asset", el.dataset.id),
   "del-stream": (el) => removeRecord("stream", el.dataset.id),
   "del-roster": (el) => removeRecord("roster", el.dataset.id),
+  "del-news": (el) => removeRecord("news", el.dataset.id),
+  "edit-news": (el) => editNews(el.dataset.id),
+  "news-open": (el) => openNews(el.dataset.id),
+  "news-filter": (el) => { state.newsFilter = el.dataset.id; renderNews(); },
+  "news-link": (el) => navigator.clipboard?.writeText(new URL("#/news/" + el.dataset.id, location.href).href).then(() => toast(t("linkCopied"), "ok"), () => {}),
+  "logs-filter": (el) => { state.logFilter = el.dataset.id; loadLogs(true); },
+  "logs-more": () => loadLogs(false),
+  "logs-refresh": () => loadLogs(true),
+  "logs-export": exportLogs,
   react: react,
   zoom: zoom,
   decide: (el) => openDecision(el.dataset.id, el.dataset.status),
@@ -1729,6 +2008,10 @@ function bindEvents() {
     if (box) { event.preventDefault(); box.focus(); box.select(); }
   });
   $("#reviewSearch").addEventListener("input", debounce(renderReview, 120));
+  $("#newsSearch").addEventListener("input", debounce(renderNews, 120));
+  $("#logsSearch").addEventListener("input", debounce(renderLogs, 120));
+  bindForm("#newsForm", saveNews, "news");
+  $("#newsForm").addEventListener("reset", () => { $('#newsForm [type="submit"] span').textContent = t("newsPublish"); });
   $("#accountsSearch").addEventListener("input", debounce(renderAccounts, 120));
   $("#reviewTabs").addEventListener("click", (event) => { const tab = event.target.closest("[data-kind]"); if (tab) { state.reviewKind = tab.dataset.kind; renderReview(); } });
   $("#archiveTabs").addEventListener("click", (event) => { const tab = event.target.closest("[data-key]"); if (tab) { state.archiveKey = tab.dataset.key; loadArchive(true); } });
