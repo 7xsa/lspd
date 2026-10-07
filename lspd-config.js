@@ -55,7 +55,7 @@
     },
 
     credits: [
-      { name: "Majed Alqahtani", role: "Head of Internal Affairs · Lead developer", icon: "code" },
+      { name: "Majed Alqahtani", role: "Captain II · Lead developer", icon: "code" },
       { name: "Murphy Edward", role: "Chief of Police", icon: "star" },
       { name: "Mohsen Alqahtani", role: "Assistant developer", icon: "code" }
     ],
