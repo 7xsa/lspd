@@ -438,7 +438,7 @@ html[lang="ar"] .table th { font: 700 13px "Cairo", sans-serif; letter-spacing: 
 .state { display: inline-flex; padding: 4px 10px; border-radius: 99px; font: 700 11px var(--font); letter-spacing: .08em; border: 1px solid currentColor; }
 .state.active, .state.accepted { color: var(--ok); }
 .state.inactive { color: var(--muted); }
-.state.loa, .state.pending { color: var(--warn); }
+.state.loa, .state.pending { color: var(--blue); }
 .state.suspended, .state.rejected { color: var(--red); }
 .wing { display: inline-block; margin-inline-end: 3px; padding: 2px 6px; border-radius: 6px; font-size: 11px; background: var(--blue-soft); color: var(--blue); }
 .row-tools { display: flex; gap: 6px; justify-content: flex-end; }
