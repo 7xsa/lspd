@@ -886,6 +886,8 @@ html[lang="ar"] .palette-group { letter-spacing: 0; font-size: 12.5px; }
 #view-roster .insignia { width: 34px; height: 34px; margin: 0 auto; }
 #view-roster .row-tools { justify-content: center; }
 #view-roster .wing { margin: 1px 2px; }
+#view-roster .points b { color: #fff; font-weight: 700; }
+#view-roster .points span { color: var(--muted); }
 
 /* ---------- shared bits ---------- */
 .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
