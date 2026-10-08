@@ -809,7 +809,7 @@ html[lang="ar"] .quick-card strong { letter-spacing: 0; font-family: "Cairo", sa
 
 /* ---------- motto strip ---------- */
 .motto { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr) auto; min-height: 104px; overflow: hidden; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--glass); }
-.motto-city { display: grid; align-content: center; gap: 4px; padding: 18px 26px; background: linear-gradient(90deg, rgba(11, 12, 15, .82), rgba(11, 12, 15, .25)), url("../assets/skyline.svg") center 70% / cover no-repeat; font: 600 15px/1.2 var(--font); letter-spacing: .26em; text-transform: uppercase; }
+.motto-city { display: grid; align-content: center; gap: 4px; padding: 18px 26px; background: linear-gradient(90deg, rgba(11, 12, 15, .82), rgba(11, 12, 15, .25)), url("../assets/los.svg") center 70% / cover no-repeat; font: 600 15px/1.2 var(--font); letter-spacing: .26em; text-transform: uppercase; }
 .motto-city small { font-size: 12px; letter-spacing: .26em; color: var(--muted); }
 .motto-line { display: flex; align-items: center; gap: 24px; padding: 18px 30px; border-inline-start: 1px solid var(--line); font: 600 14px/1.5 var(--font); letter-spacing: .26em; text-transform: uppercase; color: #d4d6db; transition: background .2s; }
 html[lang="ar"] :is(.motto-city, .motto-city small, .motto-line) { letter-spacing: 0; font-family: "Cairo", sans-serif; }
