@@ -566,13 +566,13 @@ export const transferRules = [
   "أن يكون الشخص حسن ألاسلوب",
   "أن يكون لديه CV كامل مكمل",
   "يجب أن يكون المتقدم برتبة محددة في جدول الشرطة فما فوق",
-  "اعلى رتبة للنقل Officer 2"
+  "اعلى رتبة للنقل Officer II"
 ];
 
 export const ranks = [
   "Police Commissioner", "Deputy Police Commissioner", "Police Chief", "Deputy Police Chief", "Commander",
   "Captain III", "Captain II", "Captain I", "Lieutenant II", "Lieutenant", "Sergeant II", "Sergeant I", "Sergeant",
-  "Senior Lead Officer", "Senior Officer", "Officer III", "Officer 2", "Officer 1", "Rookie"
+  "Senior Lead Officer", "Senior Officer", "Officer III", "Officer II", "Officer I", "Rookie"
 ];
 
 export const rosterSections = [
@@ -582,7 +582,7 @@ export const rosterSections = [
   ["Command of Stations", ["Lieutenant II", "Lieutenant"]],
   ["Watch Commander", ["Sergeant II"]],
   ["Field Supervisor", ["Sergeant I", "Sergeant", "Senior Lead Officer"]],
-  ["Patrol Units", ["Senior Officer", "Officer III", "Officer 2", "Officer 1"]],
+  ["Patrol Units", ["Senior Officer", "Officer III", "Officer II", "Officer I"]],
   ["Police Trainers", ["Rookie"]]
 ];
 
